@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
+    "dev:ngrok": "node scripts/dev-ngrok.js",
     "migrate": "node src/db/migrate.js"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "^3.0.2",
+    "ngrok": "^4.3.3"
   }
 }
