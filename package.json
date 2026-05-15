@@ -23,6 +23,6 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
-    "ngrok": "^4.3.3"
+    "@ngrok/ngrok": "^1.4.0"
   }
 }
