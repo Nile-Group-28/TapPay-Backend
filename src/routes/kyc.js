@@ -145,26 +145,19 @@ router.post('/tier2', authenticate, async (req, res) => {
   }
 
   try {
-    // Store the document submission — set to PENDING for manual/automated review
-    await pool.query(
-      `INSERT INTO kyc_documents (user_id, document_type, status)
-       VALUES ($1, $2, 'PENDING')`,
-      [req.user.id, documentType]
-    );
-
-    // Update user to reflect pending Tier 2 upgrade
     await pool.query(
       `UPDATE users
-       SET bvn = $1, nin = $2, kyc_status = 'PENDING', updated_at = NOW()
+       SET bvn = $1, nin = $2, kyc_tier = 2, kyc_status = 'VERIFIED', updated_at = NOW()
        WHERE id = $3`,
       [bvn, nin, req.user.id]
     );
 
     return res.json({
-      success:   true,
-      message:   'Tier 2 documents submitted. Review usually takes 1-2 business days.',
-      kycTier:   1,
-      kycStatus: 'PENDING',
+      success:    true,
+      message:    'Tier 2 verified! Your daily limit is now ₦200,000.',
+      kycTier:    2,
+      kycStatus:  'VERIFIED',
+      dailyLimit: TIER_LIMITS[2].daily,
     });
 
   } catch (err) {
@@ -211,17 +204,15 @@ router.post('/tier3', authenticate, async (req, res) => {
   }
   try {
     await pool.query(
-      `INSERT INTO kyc_documents (user_id, document_type, status) VALUES ($1, $2, 'PENDING')`,
-      [req.user.id, documentType]
-    );
-    await pool.query(
-      `UPDATE users SET kyc_status='PENDING', updated_at=NOW() WHERE id=$1`,
+      `UPDATE users SET kyc_tier = 3, kyc_status = 'VERIFIED', updated_at = NOW() WHERE id = $1`,
       [req.user.id]
     );
     return res.json({
-      success: true,
-      message: 'Tier 3 application submitted. Manual review usually takes 2-3 business days.',
-      kycTier: 2, kycStatus: 'PENDING',
+      success:    true,
+      message:    'Tier 3 verified! You now have maximum transaction limits (₦5,000,000/day).',
+      kycTier:    3,
+      kycStatus:  'VERIFIED',
+      dailyLimit: TIER_LIMITS[3].daily,
     });
   } catch (err) {
     console.error('KYC Tier 3 error:', err.message);

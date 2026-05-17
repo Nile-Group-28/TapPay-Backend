@@ -162,20 +162,32 @@ router.post('/topup/verify', authenticate, async (req, res) => {
 // Body: { senderId, amount, deviceId? }
 // ─────────────────────────────────────────────────────────────────
 router.post('/nfc-settle', authenticate, async (req, res) => {
-  const { senderId, amount, deviceId: bodyDeviceId } = req.body;
+  const { senderId, amount, deviceId: bodyDeviceId, tokenId } = req.body;
   const parsedAmount = parseFloat(amount);
   const deviceId     = bodyDeviceId || getDeviceId(req);
   const receiverId   = req.user.id;
 
-  log.nfc(`Settle request — sender:${senderId} receiver:${receiverId} amount:₦${parsedAmount} device:${deviceId || 'n/a'}`);
+  log.nfc(`Settle request — sender:${senderId} receiver:${receiverId} amount:₦${parsedAmount} token:${tokenId || 'n/a'} device:${deviceId || 'n/a'}`);
 
   if (!senderId || !parsedAmount || parsedAmount <= 0) {
     log.warn('NFC settle rejected — missing senderId or invalid amount');
-    return res.status(400).json({ success: false, message: 'senderId and amount are required.' });
+    return res.status(400).json({ success: false, message: 'Transaction failed.' });
   }
   if (senderId === receiverId) {
     log.warn(`NFC settle rejected — self-payment attempt user:${senderId}`);
     return res.status(400).json({ success: false, message: 'Cannot pay yourself.' });
+  }
+
+  // Prevent double-settlement of the same token
+  if (tokenId) {
+    const dup = await pool.query(
+      `SELECT id FROM transactions WHERE description LIKE $1 AND type = 'NFC' AND status = 'SUCCESS' LIMIT 1`,
+      [`%${tokenId}%`]
+    );
+    if (dup.rows.length) {
+      log.warn(`NFC settle rejected — tokenId already settled: ${tokenId}`);
+      return res.status(409).json({ success: false, message: 'This payment has already been processed.' });
+    }
   }
 
   // ── PRE-AUTHORIZATION FRAUD SCREENING ────────────────────────────
@@ -227,7 +239,7 @@ router.post('/nfc-settle', authenticate, async (req, res) => {
     if (!debitRes.rows.length) {
       await client.query('ROLLBACK');
       log.warn(`NFC settle failed — sender:${senderId} insufficient balance or wallet locked`);
-      return res.status(400).json({ success: false, message: 'Sender has insufficient balance or wallet is locked.' });
+      return res.status(400).json({ success: false, message: 'Transaction failed. The sender may have insufficient funds.' });
     }
 
     const senderBalance = parseFloat(debitRes.rows[0].balance);
@@ -247,9 +259,10 @@ router.post('/nfc-settle', authenticate, async (req, res) => {
     const txRes = await client.query(
       `INSERT INTO transactions
          (sender_id, receiver_id, wallet_id, amount, type, status, description)
-       VALUES ($1,$2,$3,$4,'NFC','SUCCESS','NFC Contactless Payment')
+       VALUES ($1,$2,$3,$4,'NFC','SUCCESS',$5)
        RETURNING id, created_at`,
-      [senderId, receiverId, creditRes.rows[0].id, parsedAmount]
+      [senderId, receiverId, creditRes.rows[0].id, parsedAmount,
+       tokenId ? `NFC Contactless Payment [${tokenId}]` : 'NFC Contactless Payment']
     );
 
     await client.query('COMMIT');
@@ -472,19 +485,30 @@ router.post('/withdraw', authenticate, async (req, res) => {
 // POST /api/wallet/bank-account
 // ─────────────────────────────────────────────────────────────────
 router.post('/bank-account', authenticate, async (req, res) => {
-  const { bankName, accountNumber, bankCode, accountName } = req.body;
-  if (!bankName || !accountNumber || !bankCode) {
-    return res.status(400).json({ success: false, message: 'Bank name, account number, and bank code are required.' });
+  const { bankName, accountNumber, accountName } = req.body;
+  if (!bankName || !accountNumber) {
+    return res.status(400).json({ success: false, message: 'Bank name and account number are required.' });
+  }
+  if (!/^\d{10}$/.test(accountNumber)) {
+    return res.status(400).json({ success: false, message: 'Account number must be exactly 10 digits.' });
   }
   try {
-    const recipient = await paystack.createRecipient({ accountNumber, bankCode, accountName: accountName || 'Account Holder' });
+    const dup = await pool.query(
+      'SELECT id FROM bank_accounts WHERE user_id = $1 AND account_number = $2',
+      [req.user.id, accountNumber]
+    );
+    if (dup.rows.length) {
+      return res.status(409).json({ success: false, message: 'This account number is already linked.' });
+    }
+    const displayName = accountName?.trim() || 'Account Holder';
     await pool.query(
       `INSERT INTO bank_accounts (user_id, bank_name, account_number, account_name, paystack_recipient)
        VALUES ($1,$2,$3,$4,$5)`,
-      [req.user.id, bankName, accountNumber, recipient.accountName, recipient.recipientCode]
+      [req.user.id, bankName.trim(), accountNumber, displayName, `DIRECT-${req.user.id}-${Date.now()}`]
     );
-    return res.status(201).json({ success: true, message: 'Bank account linked.', accountName: recipient.accountName });
+    return res.status(201).json({ success: true, message: 'Bank account linked successfully.', accountName: displayName });
   } catch (err) {
+    log.error('Link bank account error', err.message);
     return res.status(500).json({ success: false, message: 'Failed to link bank account.' });
   }
 });
