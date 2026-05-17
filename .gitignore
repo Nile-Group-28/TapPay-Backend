@@ -1,3 +1,6 @@
+# ngrok tunnel URL (generated at runtime)
+.ngrok-url
+
 ### Node ###
 # Logs
 logs
