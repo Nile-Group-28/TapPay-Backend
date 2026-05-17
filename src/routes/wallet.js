@@ -8,6 +8,7 @@
 
 const express  = require('express');
 const pool     = require('../db/pool');
+const { log }  = require('../logger');
 const paystack = require('../services/paystack');
 const { authenticate }                            = require('../middleware/auth');
 const { checkAndDebitLimit, checkBalanceCap }     = require('../services/tierLimits');
@@ -164,16 +165,21 @@ router.post('/nfc-settle', authenticate, async (req, res) => {
   const { senderId, amount, deviceId: bodyDeviceId } = req.body;
   const parsedAmount = parseFloat(amount);
   const deviceId     = bodyDeviceId || getDeviceId(req);
+  const receiverId   = req.user.id;
+
+  log.nfc(`Settle request — sender:${senderId} receiver:${receiverId} amount:₦${parsedAmount} device:${deviceId || 'n/a'}`);
 
   if (!senderId || !parsedAmount || parsedAmount <= 0) {
+    log.warn('NFC settle rejected — missing senderId or invalid amount');
     return res.status(400).json({ success: false, message: 'senderId and amount are required.' });
   }
-  if (senderId === req.user.id) {
+  if (senderId === receiverId) {
+    log.warn(`NFC settle rejected — self-payment attempt user:${senderId}`);
     return res.status(400).json({ success: false, message: 'Cannot pay yourself.' });
   }
 
   // ── PRE-AUTHORIZATION FRAUD SCREENING ────────────────────────────
-  // Screen the SENDER before any money moves
+  log.nfc(`Fraud screening — sender:${senderId} amount:₦${parsedAmount}`);
   let screening;
   try {
     screening = await screenTransaction({
@@ -183,18 +189,23 @@ router.post('/nfc-settle', authenticate, async (req, res) => {
       ipAddress:       req.ip,
       deviceId,
     });
+    log.nfc(
+      `Fraud result — outcome:${screening.outcome} score:${screening.score}` +
+      (screening.blockReason ? ` reason:${screening.blockReason}` : ''),
+      screening.signals
+    );
   } catch (err) {
-    console.error('Fraud screening error:', err.message);
-    // If screening itself fails, allow through but log it
+    log.error('Fraud screening threw an exception', err.message);
     screening = { outcome: 'APPROVED', score: 0, signals: { screening_error: true }, screeningId: null };
   }
 
   if (screening.outcome === 'BLOCKED') {
+    log.warn(`NFC settle BLOCKED — sender:${senderId} score:${screening.score} reason:${screening.blockReason}`);
     return res.status(403).json({
-      success:     false,
-      message:     'Transaction declined by security system.',
-      fraudScore:  screening.score,
-      reason:      screening.blockReason,
+      success:    false,
+      message:    'Transaction declined by security system.',
+      fraudScore: screening.score,
+      reason:     screening.blockReason,
     });
   }
   // ─────────────────────────────────────────────────────────────────
@@ -202,6 +213,8 @@ router.post('/nfc-settle', authenticate, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    log.nfc(`DB transaction started — debiting sender:${senderId}`);
+
     await checkAndDebitLimit(senderId, parsedAmount, client);
 
     const debitRes = await client.query(
@@ -213,28 +226,35 @@ router.post('/nfc-settle', authenticate, async (req, res) => {
 
     if (!debitRes.rows.length) {
       await client.query('ROLLBACK');
+      log.warn(`NFC settle failed — sender:${senderId} insufficient balance or wallet locked`);
       return res.status(400).json({ success: false, message: 'Sender has insufficient balance or wallet is locked.' });
     }
 
-    await checkBalanceCap(req.user.id, parsedAmount, client);
+    const senderBalance = parseFloat(debitRes.rows[0].balance);
+    log.nfc(`Debit OK — sender:${senderId} new balance:₦${senderBalance}`);
+
+    await checkBalanceCap(receiverId, parsedAmount, client);
 
     const creditRes = await client.query(
       `UPDATE wallets SET balance = balance + $1, updated_at = NOW()
        WHERE user_id = $2 RETURNING id, balance`,
-      [parsedAmount, req.user.id]
+      [parsedAmount, receiverId]
     );
+
+    const receiverBalance = parseFloat(creditRes.rows[0].balance);
+    log.nfc(`Credit OK — receiver:${receiverId} new balance:₦${receiverBalance}`);
 
     const txRes = await client.query(
       `INSERT INTO transactions
          (sender_id, receiver_id, wallet_id, amount, type, status, description)
        VALUES ($1,$2,$3,$4,'NFC','SUCCESS','NFC Contactless Payment')
        RETURNING id, created_at`,
-      [senderId, req.user.id, creditRes.rows[0].id, parsedAmount]
+      [senderId, receiverId, creditRes.rows[0].id, parsedAmount]
     );
 
     await client.query('COMMIT');
+    log.ok(`NFC settle SUCCESS — tx:${txRes.rows[0].id} ₦${parsedAmount} sender:${senderId} → receiver:${receiverId} fraudScore:${screening.score}`);
 
-    // Link fraud screening to the settled transaction
     if (screening.screeningId) {
       await linkScreeningToTransaction(screening.screeningId, txRes.rows[0].id);
     }
@@ -242,7 +262,7 @@ router.post('/nfc-settle', authenticate, async (req, res) => {
     return res.json({
       success:         true,
       message:         'Payment settled successfully.',
-      receiverBalance: parseFloat(creditRes.rows[0].balance),
+      receiverBalance,
       fraudScore:      screening.score,
       transaction: {
         id:        txRes.rows[0].id,
@@ -253,6 +273,7 @@ router.post('/nfc-settle', authenticate, async (req, res) => {
 
   } catch (err) {
     await client.query('ROLLBACK');
+    log.error(`NFC settle DB error — sender:${senderId}`, err.message);
     return res.status(err.message.includes('limit') ? 403 : 500).json({
       success: false, message: err.message || 'Settlement failed.',
     });

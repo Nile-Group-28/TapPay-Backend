@@ -4,13 +4,17 @@ const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 const pool    = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
+const { log } = require('../logger');
 
 const router = express.Router();
 
 // ─── POST /api/auth/register ─────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   const { name, email, phone, pin, password, deviceId } = req.body;
+  log.auth(`Register attempt — name:"${name}" email:${email || '-'} phone:${phone || '-'} device:${deviceId || 'n/a'}`);
+
   if (!name || (!email && !phone) || !pin) {
+    log.warn('Register rejected — missing required fields');
     return res.status(400).json({ success: false, message: 'Name, email or phone, and PIN are required.' });
   }
   if (!/^\d{4}$/.test(pin)) {
@@ -29,6 +33,7 @@ router.post('/register', async (req, res) => {
     );
     if (existing.rows.length) {
       await client.query('ROLLBACK');
+      log.warn(`Register rejected — email/phone already exists email:${email} phone:${phone}`);
       return res.status(409).json({ success: false, message: 'An account with this email or phone already exists.' });
     }
 
@@ -50,6 +55,7 @@ router.post('/register', async (req, res) => {
       [user.id, req.ip, deviceId || null]
     );
 
+    log.ok(`Register SUCCESS — user:${user.id} name:"${user.name}"`);
     const token = jwt.sign({ userId: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
     return res.status(201).json({
       success: true,
@@ -59,7 +65,7 @@ router.post('/register', async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Register error:', err.message);
+    log.error('Register DB error', err.message);
     return res.status(500).json({ success: false, message: 'Registration failed.' });
   } finally { client.release(); }
 });
@@ -67,6 +73,8 @@ router.post('/register', async (req, res) => {
 // ─── POST /api/auth/login ─────────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
   const { identifier, pin, password, deviceId } = req.body;
+  log.auth(`Login attempt — identifier:${identifier} method:${pin ? 'PIN' : 'password'} device:${deviceId || 'n/a'}`);
+
   if (!identifier || (!pin && !password)) {
     return res.status(400).json({ success: false, message: 'Identifier and PIN (or password) are required.' });
   }
@@ -76,15 +84,18 @@ router.post('/login', async (req, res) => {
        WHERE (u.email=$1 OR u.phone=$1) AND u.is_active=true`,
       [identifier]
     );
-    if (!result.rows.length) return res.status(401).json({ success: false, message: 'Account not found.' });
+    if (!result.rows.length) {
+      log.warn(`Login failed — account not found identifier:${identifier}`);
+      return res.status(401).json({ success: false, message: 'Account not found.' });
+    }
     const user = result.rows[0];
 
     if (user.locked_until && new Date() < new Date(user.locked_until)) {
       const mins = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
+      log.warn(`Login blocked — account locked user:${user.id} unlocks in ${mins}m`);
       return res.status(429).json({ success: false, message: `Account locked. Try again in ${mins} minute(s).` });
     }
 
-    // Check PIN or password
     let match = false;
     if (pin) match = await bcrypt.compare(pin, user.pin_hash);
     else if (password && user.password_hash) match = await bcrypt.compare(password, user.password_hash);
@@ -93,6 +104,7 @@ router.post('/login', async (req, res) => {
       const attempts  = user.failed_login_attempts + 1;
       const lockUntil = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
       await pool.query('UPDATE users SET failed_login_attempts=$1, locked_until=$2 WHERE id=$3', [attempts, lockUntil, user.id]);
+      log.warn(`Login failed — wrong credentials user:${user.id} attempts:${attempts}/5`);
       return res.status(401).json({ success: false, message: attempts >= 5 ? 'Too many attempts. Account locked for 15 minutes.' : `Incorrect credentials. ${5 - attempts} attempt(s) remaining.` });
     }
 
@@ -101,11 +113,13 @@ router.post('/login', async (req, res) => {
       isNewDevice = true;
       await pool.query(`UPDATE users SET failed_login_attempts=0, locked_until=NULL, device_id=$1, device_registered_at=NOW(), updated_at=NOW() WHERE id=$2`, [deviceId, user.id]);
       await pool.query(`INSERT INTO security_logs (user_id, event_type, ip_address, device_id, note) VALUES ($1,'NEW_DEVICE_LOGIN',$2,$3,$4)`, [user.id, req.ip, deviceId, `Previous: ${user.device_id}`]);
+      log.warn(`Login — new device detected user:${user.id} prev:${user.device_id} new:${deviceId}`);
     } else {
       await pool.query('UPDATE users SET failed_login_attempts=0, locked_until=NULL WHERE id=$1', [user.id]);
     }
     await pool.query(`INSERT INTO security_logs (user_id, event_type, ip_address, device_id) VALUES ($1,'LOGIN',$2,$3)`, [user.id, req.ip, deviceId || null]);
 
+    log.ok(`Login SUCCESS — user:${user.id} name:"${user.name}" balance:₦${parseFloat(user.balance || 0)}`);
     const token = jwt.sign({ userId: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
     return res.json({
       success: true, token,
@@ -114,7 +128,7 @@ router.post('/login', async (req, res) => {
         isBiometricsEnabled: user.is_biometrics_enabled, isNewDevice, hasPassword: !!user.password_hash },
     });
   } catch (err) {
-    console.error('Login error:', err.message);
+    log.error('Login DB error', err.message);
     return res.status(500).json({ success: false, message: 'Login failed.' });
   }
 });
