@@ -1,6 +1,6 @@
 {
   "name": "tappay-backend",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "TapPay NFC Payment Backend — CBN Compliant",
   "main": "src/index.js",
   "scripts": {
@@ -17,7 +17,9 @@
     "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
     "helmet": "^7.1.0",
+    "compression": "^1.7.4",
     "express-rate-limit": "^7.1.5",
+    "express-validator": "^7.0.1",
     "dotenv": "^16.3.1",
     "axios": "^1.6.2",
     "uuid": "^9.0.0",
