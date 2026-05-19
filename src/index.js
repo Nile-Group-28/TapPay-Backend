@@ -25,18 +25,24 @@ const authLimit = rateLimit({
   message:  { success: false, message: 'Too many login attempts.' },
 });
 
-// Log every request before body is parsed
-app.use(requestLogger);
+const syncLimit = rateLimit({
+  windowMs: 60 * 1000, max: 5,
+  message:  { success: false, message: 'Too many sync attempts. Please wait.' },
+});
 
-// Webhook needs raw body — register before express.json()
+app.use(requestLogger);
 app.use('/api/webhook', require('./routes/webhook'));
-app.use(express.json({ limit: '10kb' }));
+app.use(express.json({ limit: '50kb' }));
 
 // Routes
 app.use('/api/auth',   authLimit, require('./routes/auth'));
 app.use('/api/wallet', require('./routes/wallet'));
 app.use('/api/kyc',    require('./routes/kyc'));
 app.use('/api/fraud',  require('./routes/fraud'));
+app.use('/api/pos',    require('./routes/pos'));
+
+// Tighter rate limit on offline sync to prevent abuse
+app.use('/api/wallet/sync-offline-transactions', syncLimit);
 
 app.get('/health', (_, res) => {
   log.ok('Health check');
@@ -55,13 +61,14 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`
-  ╔══════════════════════════════════════════════╗
-  ║   TAPPAY BACKEND — CBN + Fraud Engine        ║
-  ║   Port        : ${PORT}                         ║
-  ║   Logging     : enabled                      ║
-  ║   Fraud Screen: Pre-authorization            ║
-  ║   KYC Tiers   : 0 → 1 → 2 → 3              ║
-  ╚══════════════════════════════════════════════╝
+  ╔══════════════════════════════════════════════════╗
+  ║   TAPPAY BACKEND — CBN + Fraud Engine            ║
+  ║   Port        : ${PORT}                             ║
+  ║   Offline Pay : Ed25519-signed, queued sync      ║
+  ║   SoftPOS     : Merchant profiles, receipts      ║
+  ║   Fraud Screen: Pre-authorization                ║
+  ║   KYC Tiers   : 0 → 1 → 2 → 3                  ║
+  ╚══════════════════════════════════════════════════╝
   `);
   log.ok(`Server listening on port ${PORT}`);
 });
