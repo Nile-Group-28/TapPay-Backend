@@ -16,7 +16,7 @@
 // The engine runs BEFORE any money moves (pre-authorization).
 // ================================================================
 
-const pool = require('../db/pool');
+const { pool } = require('../db/pool');
 
 // Score thresholds
 const SCORE_BLOCK         = 70;   // block the transaction

@@ -5,7 +5,7 @@
 // Regular users only have read access to their own screening history.
 
 const express = require('express');
-const pool    = require('../db/pool');
+const { pool } = require('../db/pool');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();

@@ -3,7 +3,7 @@
 //   https://your-server.com/api/webhook/paystack
 
 const express  = require('express');
-const pool     = require('../db/pool');
+const { pool } = require('../db/pool');
 const paystack = require('../services/paystack');
 
 const router = express.Router();

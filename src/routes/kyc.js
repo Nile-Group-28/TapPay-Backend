@@ -10,7 +10,7 @@
 
 const express = require('express');
 const axios   = require('axios');
-const pool    = require('../db/pool');
+const { pool } = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { TIER_LIMITS }  = require('../services/tierLimits');
 

@@ -2,7 +2,7 @@
 const express = require('express');
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
-const pool    = require('../db/pool');
+const { pool } = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { log } = require('../logger');
 

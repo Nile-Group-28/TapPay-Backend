@@ -7,7 +7,7 @@
 // Replace your existing src/routes/wallet.js with this file.
 
 const express  = require('express');
-const pool     = require('../db/pool');
+const { pool } = require('../db/pool');
 const { log }  = require('../logger');
 const paystack = require('../services/paystack');
 const { authenticate }                            = require('../middleware/auth');
